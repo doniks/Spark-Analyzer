@@ -160,6 +160,41 @@ Our designs have undergone rigorous testing and verification. We've already prod
 | **Price (USD)**              | $49                          | $28                    | $22                  | $16                  |
 
 
+## Firmware development
+
+* clone this repository `git clone https://github.com/tooyipjee/Spark-Analyzer.git`
+* install [Visual Studio Code](https://code.visualstudio.com/Docs/setup/setup-overview)
+* install the [PlatformIO](https://platformio.org/) plugin in VSCode
+* open the project you want to use: [WebApp for Power Delivery](https://github.com/tooyipjee/Spark-Analyzer/tree/master/PlatformIO/WebApp) or [WebApp for Programmable Power Supply](https://github.com/tooyipjee/Spark-Analyzer/tree/master/PlatformIO/WebApp_PPS)
+* connect the Spark Analyzer with a usb-C to usb-C cable to your computer
+* open the "Monitor" task in PlatformIO
+  * you may have to configure the serial port in `platformio.ini` file, e.g.
+  ```
+    upload_port = /dev/ttyACM0
+    monitor_port = /dev/ttyACM0
+  ```
+* make sure you see the boot messages
+  TODO: add screenshot of PIO, ini, monitor
+* perform the "Build" task to build the firmware
+* then perform the "Upload" task to flash the new firmware
+* once the flashing is complete, perform "Build Filesystem Image" and "Upload Filesystem Image" tasks
+
+### Debugging
+* in the Platform IO "Monitor" you can follow the debug output from the Spark Analyzer
+* if you have a serial UART adapter you can also connect to the GND, RX, TX pins on the Spark Analyzer and 
+* in your browser's "Web Development Tools" you can follow the http request/responses
+
+## Mobile app development
+
+See flutter/SparkAnalyzer/README.md
+
+## Buttons
+
+The Spark Analyzer has two buttons:
+* the button closest to the green output terminal is the reset button
+* the other button is also something .... 
+* holding the other button and then pressing the reset puts the exp32 into ... whatsitcalled download mode?!
+
 ## License
 
 MIT License

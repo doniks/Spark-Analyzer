@@ -63,6 +63,7 @@
 
 void initializeSerialAndPins();
 void initializeUSB_PD();
+void printStatus();
 void updateStatus();
 void processCurrentReading();
 int readFilteredADC(int pin);
@@ -71,6 +72,7 @@ int readFilteredADC(int pin);
 #define FILTER_LENGTH 10
 #define INITIAL_OUTPUT_STATE 0 // 1 for On, 0 for Off
 #define VOLTAGE 5
+const unsigned long updateIntervalMs = 10000;
 
 // Filter variables
 int adcSamples[FILTER_LENGTH];
@@ -78,7 +80,6 @@ int adcIndex = 0;
 int adcSum = 0;
 
 unsigned long lastUpdateTime = 0;
-const unsigned long updateInterval = 100; // Set sample rate
 const int usb_pd_int_pin = 10;
 const int output_pin = 3;
 const int current_pin = 2;
@@ -134,10 +135,14 @@ void handleOutputControl(AsyncWebServerRequest *request)
     request->send(400, "text/plain", "Output parameter missing");
   }
 }
+
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
+
 void setup()
 {
+  Serial.begin(115200);
+  Serial.println("PD setup");
   // Initialize Preferences with namespace "storage". False for read/write mode.
   preferences.begin("storage", false);
   // Retrieve stored voltage value or default to VOLTAGE if not set.
@@ -146,8 +151,10 @@ void setup()
   WiFiManager wifiManager;                   // Initialize WiFiManager
   wifiManager.autoConnect("Spark Analyzer"); // Auto-connect to WiFi. Change "ESP32_Device" to your desired AP name
 
-  Serial.begin(115200);
-  Serial.println("Connected to WiFi");
+  Serial.print("Connected to WiFi: ");
+  Serial.println(wifiManager.getWiFiSSID());
+  Serial.print("Local IP:");
+  Serial.println(WiFi.localIP());
 
   initializeUSB_PD();
   for (int i = 0; i < 30; i++)
@@ -155,6 +162,7 @@ void setup()
     processCurrentReading();
   }
   initializeSerialAndPins();
+  printStatus();
 
   // Initialize SPIFFS
   if (!SPIFFS.begin())
@@ -179,6 +187,9 @@ void setup()
   // Debug pin lights up when ready.
   pinMode(debug_led, OUTPUT);
   digitalWrite(debug_led, HIGH);
+
+  printStatus();
+  Serial.println("Setup complete");
 }
 
 void loop()
@@ -227,13 +238,33 @@ void initializeUSB_PD()
   }
 }
 
+void printStatus()
+{
+  Serial.print("[");
+  Serial.print(lastUpdateTime);
+  Serial.print("] ");
+  Serial.print("Time: ");
+  Serial.print(lastUpdateTime/1000);
+  Serial.print(" s, ");
+  Serial.print("Voltage: ");
+  Serial.print(voltage);
+  Serial.print(" V, ");
+  Serial.print("Current: ");
+  Serial.print(current);
+  // Serial.print();
+  Serial.println();
+}
+
 // Update status at intervals
 void updateStatus()
 {
-  if (millis() - lastUpdateTime >= updateInterval)
+  if (millis() - lastUpdateTime >= updateIntervalMs)
   {
     lastUpdateTime = millis();
+
     // Add any periodic update logic here
+
+    printStatus();
   }
   PD_UFP.run();
 }
@@ -252,7 +283,6 @@ void processCurrentReading()
   }
   current = 5.6865 * (readFilteredADC(current_pin) - adcError);
 }
-
 
 // Reads ADC value with a moving average filter
 int readFilteredADC(int pin)

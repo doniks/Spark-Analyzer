@@ -94,7 +94,9 @@ void PD_UFP_Log_c::status_log_event(uint8_t status, uint32_t * obj)
 #define SNPRINTF snprintf_P
 #else
 #define SNPRINTF snprintf
+#ifndef PSTR
 #define PSTR(str) str
+#endif
 #endif
 
 #define LOG(format, ...) do { n = SNPRINTF(buffer, maxlen, PSTR(format), ## __VA_ARGS__); } while (0)

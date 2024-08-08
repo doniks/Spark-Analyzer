@@ -131,7 +131,10 @@
 
 <body>
   <h2>Spark Analyzer Web App</h2>
+  <h3>USB-PD - Power Delivery mode</h3>
+
   <div id="chart-current" class="container"></div>
+
   <div class="voltage-selector">
     <label for="voltage">Select Voltage:</label>
     <select id="voltage">
@@ -180,6 +183,7 @@
       credits: { enabled: false }
     });
 
+	// get Current Measurements
     setInterval(function () {
       var xhttp = new XMLHttpRequest();
       xhttp.onreadystatechange = function () {
@@ -204,6 +208,13 @@
       xhttp.send();
     }
 
+    function setOutput() {
+      var xhttp = new XMLHttpRequest();
+      var outputState = document.getElementById("outputToggle").checked ? "1" : "0";
+      xhttp.open("GET", "/set_output?output=" + outputState, true);
+      xhttp.send();
+    }
+
     function updateVoltageDisplay() {
       var xhttp = new XMLHttpRequest();
       xhttp.onreadystatechange = function () {
@@ -215,12 +226,6 @@
       xhttp.send();
     }
     setInterval(updateVoltageDisplay, 1000); // Update every second
-    function setOutput() {
-      var xhttp = new XMLHttpRequest();
-      var outputState = document.getElementById("outputToggle").checked ? "1" : "0";
-      xhttp.open("GET", "/set_output?output=" + outputState, true);
-      xhttp.send();
-    }
 
   </script>
 </body>

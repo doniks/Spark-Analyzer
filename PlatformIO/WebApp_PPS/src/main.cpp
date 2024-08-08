@@ -13,6 +13,7 @@
 
    Key components and libraries:
      - ESPAsyncWebServer: For handling HTTP requests and serving the web interface.
+     - EEPROM: To store and retrieve persistent settings such as the voltage level.
      - WiFiManager: To facilitate easy WiFi connectivity and configuration.
      - SPIFFS: For storing and accessing web interface files.
 
@@ -58,16 +59,26 @@
 #include <WiFiManager.h> // Include the WiFiManager library
 #include <ESPAsyncWebServer.h>
 #include <SPIFFS.h>
+#include <Preferences.h>
 
 void initializeSerialAndPins();
 void initializeUSB_PD();
+void printStatus();
 void updateStatus();
 void processCurrentReading();
-int readFilteredADC(int pin);
+int  readFilteredADC(int pin);
+
+#define POWER_SUPPLY_MODE_UNDEFINED 0
+#define POWER_SUPPLY_MODE_PD        1
+#define POWER_SUPPLY_MODE_PPS       2
 
 // User-configurable constants
 #define FILTER_LENGTH 10
-#define INITIAL_OUTPUT_STATE 0 // 1 for On, 0 for Off
+
+#define DEFAULT_POWER_SUPPLY_MODE          POWER_SUPPLY_MODE_PPS
+#define DEFAULT_PPS_OUTPUT_STATE           false // true for On, false for Off
+#define DEFAULT_PPS_OUTPUT_VOLTAGE_V       5
+#define DEFAULT_PPS_OUTPUT_CURRENT_LIMIT_A 1
 
 // Filter variables
 int adcSamples[FILTER_LENGTH];
@@ -75,97 +86,129 @@ int adcIndex = 0;
 int adcSum = 0;
 
 unsigned long lastUpdateTime = 0;
-const unsigned long updateInterval = 100; // Set sample rate
+const unsigned long updateInterval = 10000; // Set sample rate
 const int usb_pd_int_pin = 10;
 const int output_pin = 3;
 const int current_pin = 2;
 const int debug_led = 8;
-int current = 0; // in mA
-bool output = INITIAL_OUTPUT_STATE;
-float voltage = 5;
-float currentSet = 1;// in Ampere
+int measuredCurrentMA = 0;
+bool ppsOutputEnabled = DEFAULT_PPS_OUTPUT_STATE;
+float ppsOutputVoltageV = DEFAULT_PPS_OUTPUT_VOLTAGE_V;
+float ppsOutputCurrentLimitA = DEFAULT_PPS_OUTPUT_CURRENT_LIMIT_A;
 int adcError = 0;
 
 PD_UFP_c PD_UFP;
 
-void handleCurrentChange(AsyncWebServerRequest *request) {
-  if (request->hasParam("current")) {
-    float newCurrent = request->getParam("current")->value().toFloat();
-    if (newCurrent != currentSet) {
-      currentSet = newCurrent;
-      Serial.print("Current changed to ");
-      Serial.println(currentSet);
-      PD_UFP.set_PPS(PPS_V(voltage), PPS_A(currentSet));
-      request->send(200, "text/plain", "Current limit updated");
+Preferences preferences;
+// Keys used for Preferences storage
+// N.B. keys may not be longer than 15 characters
+#define PREFERENCE_PPS_OUTPUT_VOLTAGE_V "ppsVoltageV"
+#define PREFERENCE_PPS_OUTPUT_CURRENT_A "ppsCurrentA"
+
+void handlePpsOutputCurrentLimitAChange(AsyncWebServerRequest *request) {
+  if (request->hasParam("ppsOutputCurrentLimitA")) {
+    float newCurrentA = request->getParam("ppsOutputCurrentLimitA")->value().toFloat();
+    if (newCurrentA != ppsOutputCurrentLimitA) {
+      ppsOutputCurrentLimitA = newCurrentA;
+      ESP_LOGI("sparka", "PPS Current limit changed to %5.3f A", ppsOutputCurrentLimitA);
+      bool retval = PD_UFP.set_PPS(PPS_V(ppsOutputVoltageV), PPS_A(ppsOutputCurrentLimitA));
+      ESP_LOGD("sparka", "set_PPS(): %u", retval);
+      preferences.putFloat(PREFERENCE_PPS_OUTPUT_CURRENT_A, ppsOutputCurrentLimitA);
+      request->send(200, "text/plain", "PPS Current limit updated");
     } else {
-      request->send(200, "text/plain", "Current limit unchanged");
+      request->send(200, "text/plain", "PPS Current limit unchanged");
     }
   } else {
-    request->send(400, "text/plain", "Current parameter missing");
-  }
-}
-void handleVoltageChange(AsyncWebServerRequest *request)
-{
-  if (request->hasParam("voltage"))
-  {
-    float newVoltage = request->getParam("voltage")->value().toFloat();
-    if (newVoltage != voltage)
-    {
-     
-      voltage = newVoltage;
-      Serial.print("Voltage changed to ");
-      Serial.println(voltage);
-      // esp_restart();                  // Restart ESP32-C3 to apply new voltage setting
-      PD_UFP.set_PPS(PPS_V(voltage), PPS_A(currentSet));
-    }
-    else
-    {
-      request->send(200, "text/plain", "Voltage unchanged");
-    }
-    request->send(200, "text/plain", String(voltage));
-  }
-  else
-  {
-    request->send(400, "text/plain", "Voltage parameter missing");
+    request->send(400, "text/plain", "PPS Current parameter missing");
   }
 }
 
-void handleOutputControl(AsyncWebServerRequest *request)
+void handlePpsOutputVoltageVChange(AsyncWebServerRequest *request)
 {
-  if (request->hasParam("output"))
+  if (request->hasParam("ppsOutputVoltageV"))
   {
-    String outputState = request->getParam("output")->value();
-    if (outputState == "1")
+    float newVoltageV = request->getParam("ppsOutputVoltageV")->value().toFloat();
+    if (newVoltageV != ppsOutputVoltageV)
     {
-      output = true;
-      digitalWrite(output_pin, HIGH); // Turn output ON
-      request->send(200, "text/plain", "Output Enabled");
-    }
-    else if (outputState == "0")
-    {
-      output = false;
-      digitalWrite(output_pin, LOW); // Turn output OFF
-      request->send(200, "text/plain", "Output Disabled");
+      ppsOutputVoltageV = newVoltageV;
+      ESP_LOGI("sparka", "PPS Voltage changed to %5.3f V", ppsOutputVoltageV);
+      // esp_restart();                  // Restart ESP32-C3 to apply new voltage setting
+      bool retval = PD_UFP.set_PPS(PPS_V(ppsOutputVoltageV), PPS_A(ppsOutputCurrentLimitA));
+      ESP_LOGI("sparka", "set_PPS(): %u", retval);
+      preferences.putFloat(PREFERENCE_PPS_OUTPUT_VOLTAGE_V, ppsOutputVoltageV);
+      request->send(200, "text/plain", "PPS Voltage updated");
     }
     else
     {
-      request->send(400, "text/plain", "Invalid output state");
+      ESP_LOGI("sparka", "PPS Voltage unchanged");
+      request->send(200, "text/plain", "PPS Voltage unchanged");
     }
   }
   else
   {
-    request->send(400, "text/plain", "Output parameter missing");
+    ESP_LOGI("sparka", "PPS Voltage parameter missing");
+    request->send(400, "text/plain", "PPS Voltage parameter missing");
   }
 }
+
+void handlePpsOutputState(AsyncWebServerRequest *request)
+{
+  if (request->hasParam("ppsOutputState"))
+  {
+    String newOutputState = request->getParam("ppsOutputState")->value();
+    if (newOutputState == "1")
+    {
+      ppsOutputEnabled = true;
+      digitalWrite(output_pin, HIGH); // Turn output ON
+      request->send(200, "text/plain", "PPS Output enabled");
+    }
+    else if (newOutputState == "0")
+    {
+      ppsOutputEnabled = false;
+      digitalWrite(output_pin, LOW); // Turn output OFF
+      request->send(200, "text/plain", "PPS Output disabled");
+    }
+    else
+    {
+      request->send(400, "text/plain", "PPS Output parameter invalid");
+    }
+  }
+  else
+  {
+    request->send(400, "text/plain", "PPS Output parameter missing");
+  }
+}
+
 // Create AsyncWebServer object on port 80
 AsyncWebServer server(80);
+
 void setup()
 {
+  Serial.begin(115200);
+
+  esp_log_level_set("sparka", ESP_LOG_INFO);
+  ESP_LOGE("sparka", "ERROR");
+  ESP_LOGW("sparka", "WARNING");
+  ESP_LOGI("sparka", "INFO");
+  ESP_LOGD("sparka", "DEBUG");
+  ESP_LOGV("sparka", "VERBOSE");
+
+  // Initialize Preferences with namespace "storage". False for read/write mode.
+  preferences.begin("storage", false);
+  ESP_LOGD("sparka", "preferences.getType(V): %u", preferences.getType(PREFERENCE_PPS_OUTPUT_VOLTAGE_V));
+  ESP_LOGD("sparka", "preferences.getType(A): %u", preferences.getType(PREFERENCE_PPS_OUTPUT_CURRENT_A));
+  // Retrieve stored values or use defaults if not set.
+  ppsOutputVoltageV =      preferences.getFloat(PREFERENCE_PPS_OUTPUT_VOLTAGE_V, DEFAULT_PPS_OUTPUT_VOLTAGE_V);
+  ppsOutputCurrentLimitA = preferences.getFloat(PREFERENCE_PPS_OUTPUT_CURRENT_A, DEFAULT_PPS_OUTPUT_CURRENT_LIMIT_A);
+
+  ESP_LOGI("sparka", "Mode: PPS");
+  ESP_LOGI("sparka", "Voltage: %5.3f V\n", ppsOutputVoltageV);
+  ESP_LOGI("sparka", "Current limit: %5.3f A\n", ppsOutputCurrentLimitA);
+
   WiFiManager wifiManager;                   // Initialize WiFiManager
   wifiManager.autoConnect("Spark Analyzer"); // Auto-connect to WiFi. Change "ESP32_Device" to your desired AP name
 
-  Serial.begin(115200);
-  Serial.println("Connected to WiFi");
+  ESP_LOGI("sparka", "Connected to WiFi: %s", wifiManager.getWiFiSSID().c_str());
 
   initializeUSB_PD();
   for (int i = 0; i < 30; i++)
@@ -173,34 +216,31 @@ void setup()
     processCurrentReading();
   }
   initializeSerialAndPins();
+  printStatus();
 
   // Initialize SPIFFS
   if (!SPIFFS.begin())
   {
-    Serial.println("An Error has occurred while mounting SPIFFS");
+    ESP_LOGE("sparka", "An Error has occurred while mounting SPIFFS");
     return;
   }
-  Serial.print("To access the web app, open your browser and navigate to -> ");
-  Serial.println(WiFi.localIP());
+  ESP_LOGI("sparka", "To access the web app, open your browser and navigate to -> ");
+  ESP_LOGI("sparka", "http://%s", WiFi.localIP().toString().c_str());
 
-  server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-            { request->send(SPIFFS, "/index.html"); });
-  server.on("/current", HTTP_GET, [](AsyncWebServerRequest *request)
-            { request->send(200, "text/plain", String(current)); });
-  server.on("/get_voltage", HTTP_GET, [](AsyncWebServerRequest *request)
-            { request->send(200, "text/plain", String(voltage)); });
-  server.on("/get_current", HTTP_GET, [](AsyncWebServerRequest *request)
-            { request->send(200, "text/plain", String(currentSet)); });
-  server.on("/set_voltage", HTTP_GET, handleVoltageChange);
-
-  server.on("/set_output", HTTP_GET, handleOutputControl);
-  server.on("/set_current", HTTP_GET, handleCurrentChange);
-
+  server.on("/",                               HTTP_GET, [](AsyncWebServerRequest *request)  { request->send(SPIFFS, "/index.html"); });
+  server.on("/get_measured_current_mA",        HTTP_GET, [](AsyncWebServerRequest *request)  { request->send(200, "text/plain", String(measuredCurrentMA)); });
+  server.on("/get_pps_output_voltage_V",       HTTP_GET, [](AsyncWebServerRequest *request)  { request->send(200, "text/plain", String(ppsOutputVoltageV)); });
+  server.on("/get_pps_output_current_limit_A", HTTP_GET, [](AsyncWebServerRequest *request)  { request->send(200, "text/plain", String(ppsOutputCurrentLimitA)); });
+  server.on("/set_pps_output_state",           HTTP_GET, handlePpsOutputState);
+  server.on("/set_pps_output_voltage_V",       HTTP_GET, handlePpsOutputVoltageVChange);
+  server.on("/set_pps_output_current_limit_A", HTTP_GET, handlePpsOutputCurrentLimitAChange);
   server.begin();
 
+  printStatus();
   // Debug pin lights up when ready.
   pinMode(debug_led, OUTPUT);
   digitalWrite(debug_led, HIGH);
+  ESP_LOGI("sparka", "Setup complete");
 }
 
 void loop()
@@ -212,12 +252,13 @@ void loop()
 // Initialize Serial and Pin Modes
 void initializeSerialAndPins()
 {
+  // TODO: in fact we're initializing Serial twice - we should clean up and do it once only. I think ideally also init pins first think from setup
   Serial.begin(115200);
   Serial.println("Initializing...");
 
   pinMode(usb_pd_int_pin, INPUT);
   pinMode(output_pin, OUTPUT);
-  digitalWrite(output_pin, LOW);
+  digitalWrite(output_pin, LOW); // TODO: clean up when we drive output_pin, now seems a bit all over the place
 
   pinMode(current_pin, INPUT);
 }
@@ -225,10 +266,21 @@ void initializeSerialAndPins()
 // Initialize USB Power Delivery
 void initializeUSB_PD()
 {
+  // TODO: check for errors
   Wire.begin(1, 0);
   Wire.setClock(400000);
+  // TODO: why are we initializing with 5, 2?
   PD_UFP.init_PPS(usb_pd_int_pin, PPS_V(5), PPS_A(2.0));
- }
+}
+
+void printStatus()
+{
+  ESP_LOGD("sparka", "PPS mode, Voltage: %5.3f V, Current: %d mA (%5.3f A), Output: %s",
+    ppsOutputVoltageV,
+    measuredCurrentMA,
+    ppsOutputCurrentLimitA,
+    ppsOutputEnabled ? "enabled" : "disabled");
+}
 
 // Update status at intervals
 void updateStatus()
@@ -236,7 +288,10 @@ void updateStatus()
   if (millis() - lastUpdateTime >= updateInterval)
   {
     lastUpdateTime = millis();
+
     // Add any periodic update logic here
+
+    printStatus();
   }
   PD_UFP.run();
 }
@@ -244,7 +299,7 @@ void updateStatus()
 // Process current reading and adjust LED status
 void processCurrentReading()
 {
-  if (output)
+  if (ppsOutputEnabled)
   {
     digitalWrite(output_pin, HIGH);
   }
@@ -253,7 +308,7 @@ void processCurrentReading()
     adcError = readFilteredADC(current_pin);
     digitalWrite(output_pin, LOW);
   }
-  current = 5.6865 * (readFilteredADC(current_pin) - adcError);
+  measuredCurrentMA = 5.6865 * (readFilteredADC(current_pin) - adcError);
 }
 
 // Reads ADC value with a moving average filter
